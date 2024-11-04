@@ -79,7 +79,6 @@ class DrawEllipseCommand(Command):
         logger.info(f"Draw ellipse at ({self.x0}, {self.y0}), radius-x {self.radius_x}, radius-y {self.radius_y}, with color RGB565({self.color})")
         return {"x0": self.x0, "y0": self.y0, "radius_x": self.radius_x, "radius_y": self.radius_y, "color": self.color}
 
-
 class FillEllipseCommand(Command):
     def __init__(self, params):
         super().__init__(0x07)
@@ -141,6 +140,8 @@ class DrawTextCommand(Command):
     def __init__(self, params):
         super().__init__(0x0C)
         logger.info(f"Initializing DrawTextCommand with params: {params.hex()}")
+        logger.info(f"Total length of params: {len(params)}")
+        
         if len(params) < 8:
             raise ValueError("Insufficient bytes for Draw Text command.")
         
@@ -150,11 +151,11 @@ class DrawTextCommand(Command):
         self.length = params[7]
         
         logger.info(f"Parsed values: x0={self.x0}, y0={self.y0}, color={self.color}, font={self.font_number}, length={self.length}")
+        logger.info(f"Expected text length: {self.length}")
+        logger.info(f"Remaining bytes: {len(params[8:])}")
         
-        if len(params) < 8 + self.length:
-            raise ValueError(f"Insufficient bytes for text data. Expected {8 + self.length}, got {len(params)}")
-        
-        self.text = params[8:8 + self.length].decode('utf-8', errors='ignore')
+        actual_text_length = min(self.length, len(params) - 8)
+        self.text = params[8:8 + actual_text_length].decode('utf-8', errors='ignore')
         logger.info(f"Decoded text: {self.text}")
 
     def execute(self):
@@ -168,10 +169,9 @@ class DrawTextCommand(Command):
         }
 
 
-class DisplayCommandParser:
-    logger = logging.getLogger('command_parser')
-    
+class TextCommandParser:
     def __init__(self):
+        self.logger = logging.getLogger('text_command_parser')
         if not self.logger.handlers:
             handler = logging.StreamHandler()
             formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -179,6 +179,43 @@ class DisplayCommandParser:
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.INFO)
 
+    def validate_and_parse(self, params):
+        self.logger.info(f"Processing Draw Text command. Params length: {len(params)}")
+        
+        if len(params) < 8:
+            self.logger.error(f"Invalid number of parameters: expected at least 8, got {len(params)}")
+            return False
+            
+        text_length = params[7]
+        self.logger.info(f"Text length from params: {text_length}")
+        
+        min_expected_length = 8 + text_length - 1  # Мінімальна очікувана довжина
+        max_expected_length = 8 + text_length      # Максимальна очікувана довжина
+        
+        self.logger.info(f"Expected length range: {min_expected_length}-{max_expected_length}")
+        
+        if len(params) < min_expected_length:
+            self.logger.error(f"Invalid number of parameters: expected at least {min_expected_length}, got {len(params)}")
+            return False
+        
+        if len(params) > max_expected_length:
+            self.logger.warning(f"More parameters than expected: got {len(params)}, maximum expected was {max_expected_length}")
+        
+        self.logger.info("Draw Text command validation passed")
+        return True
+
+
+class DisplayCommandParser:
+    def __init__(self):
+        self.logger = logging.getLogger('command_parser')
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.setLevel(logging.INFO)
+
+        self.text_parser = TextCommandParser()
         self.commands = {
             0x01: ClearDisplayCommand,
             0x02: DrawPixelCommand,
@@ -194,7 +231,6 @@ class DisplayCommandParser:
             0x0C: DrawTextCommand
         }
 
-        # Очікувана кількість байтів для кожної команди
         self.expected_lengths = {
             0x01: 2,   
             0x02: 6,   
@@ -210,11 +246,11 @@ class DisplayCommandParser:
             0x0C: None, 
         }
 
-    
     def parse(self, byte_array):
         self.logger.info(f"Received byte array: {byte_array.hex()}")
         if not byte_array:
             raise ValueError("Byte array is empty")
+            
         command_id = byte_array[0]
         params = byte_array[1:]
         self.logger.info(f"Command ID: {command_id}, Params: {params.hex()}")
@@ -223,19 +259,9 @@ class DisplayCommandParser:
             self.logger.warning(f"Unknown command ID: {command_id}")
             return None
 
-        if command_id == 0x0C:  
-            self.logger.info(f"Processing Draw Text command. Params length: {len(params)}")
-            if len(params) < 8:
-                self.logger.error(f"Invalid number of parameters for command ID {command_id}: expected at least 8, got {len(params)}")
+        if command_id == 0x0C:
+            if not self.text_parser.validate_and_parse(params):
                 return None
-            text_length = params[7]
-            self.logger.info(f"Text length from params: {text_length}")
-            expected_length = 8 + text_length
-            self.logger.info(f"Expected total length: {expected_length}")
-            if len(params) < expected_length:
-                self.logger.error(f"Invalid number of parameters for command ID {command_id}: expected {expected_length}, got {len(params)}")
-                return None
-            self.logger.info("Draw Text command validation passed")
         else:
             expected_length = self.expected_lengths.get(command_id)
             if expected_length is not None and len(params) != expected_length:
